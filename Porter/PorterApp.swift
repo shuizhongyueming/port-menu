@@ -33,6 +33,22 @@ struct PorterApp: App {
             updaterController = nil
         }
         moveToApplicationsIfNeeded()
+
+        #if DEBUG
+        // PROTOTYPE 入口（issue #5）——丢弃用，随 PrototypeGallery.swift 一起删。
+        switch ProcessInfo.processInfo.environment["PORTER_PROTOTYPE"] {
+        case "export":
+            DispatchQueue.main.async {
+                PrototypeWindow.runExportAndQuit(directory: URL(filePath: "/tmp/porter-proto"))
+            }
+        case "1":
+            DispatchQueue.main.async {
+                PrototypeWindow.show(rowHeight: PrototypeRenderer.measureRowHeight())
+            }
+        default:
+            break
+        }
+        #endif
     }
 
     var body: some Scene {
