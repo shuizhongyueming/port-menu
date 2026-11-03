@@ -78,6 +78,128 @@ struct PrototypeCappedList: View {
     }
 }
 
+
+// MARK: - 行：按钮是否常占宽度（Q2 的第二轮）
+
+enum PrototypeButtonLayout: String {
+    /// 现在线上行为：按钮永远占位，只是 opacity 0/1。
+    case reserved
+    /// 非 hover 时文字吃满宽度，hover 出按钮时才把文字截断（会看到文字重排）。
+    case reclaim
+    /// 文字永不重排：按钮盖在尾部，下面垫一层渐变遮罩把被盖住的字淡出。
+    case cover
+}
+
+struct PrototypeRow: View {
+    let entry: ActivePort
+    let showTopDivider: Bool
+    let hovered: Bool
+    let layout: PrototypeButtonLayout
+    let buttonsWidth: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if showTopDivider {
+                Divider().padding(.horizontal, 16)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Circle().fill(.green).frame(width: 6, height: 6).offset(y: -1)
+
+                    Text(entry.projectName)
+                        .font(.system(.body, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.trailing, trailingInset)
+                .overlay(alignment: .trailing) {
+                    ZStack(alignment: .trailing) {
+                        if layout == .cover, hovered {
+                            LinearGradient(
+                                colors: [Color(nsColor: .windowBackgroundColor).opacity(0),
+                                         Color(nsColor: .windowBackgroundColor).opacity(0.85),
+                                         Color(nsColor: .windowBackgroundColor)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                            .frame(width: buttonsWidth + 70)
+                            .frame(maxHeight: .infinity)
+                        }
+                        HStack(spacing: 2) {
+                            HoverButton("Kill", role: .destructive) {}
+                            HoverButton("Open") {}
+                        }
+                        .opacity(hovered ? 1 : 0)
+                    }
+                }
+
+                HStack(spacing: 6) {
+                    if !entry.branch.isEmpty {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.triangle.branch")
+                            Text(entry.branch).lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                    Text(":\(String(entry.port))")
+                        .fontDesign(.monospaced)
+                        .foregroundStyle(.tertiary)
+                    Spacer(minLength: 0)
+                    if let start = entry.startTime {
+                        Text(formatUptime(from: start)).foregroundStyle(.tertiary)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+        .contentShape(Rectangle())
+    }
+
+    private var trailingInset: CGFloat {
+        switch layout {
+        case .reserved: return buttonsWidth          // 永远让位
+        case .reclaim: return hovered ? buttonsWidth : 0
+        case .cover: return 0                        // 永不重排，按钮盖上去
+        }
+    }
+}
+
+struct PrototypeRowList: View {
+    let entries: [ActivePort]
+    let maxRows: Int
+    let rowHeight: CGFloat
+    let hovered: Bool
+    let layout: PrototypeButtonLayout
+    let buttonsWidth: CGFloat
+
+    private var contentHeight: CGFloat { CGFloat(entries.count) * rowHeight + 6 }
+    private var capHeight: CGFloat { CGFloat(maxRows) * rowHeight + 6 }
+
+    var body: some View {
+        ScrollView(.vertical) {
+            VStack(spacing: 0) {
+                ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                    PrototypeRow(
+                        entry: entry,
+                        showTopDivider: index > 0,
+                        hovered: hovered,
+                        layout: layout,
+                        buttonsWidth: buttonsWidth
+                    )
+                }
+            }
+            .padding(.bottom, 6)
+        }
+        .frame(height: min(contentHeight, capHeight))
+        .environment(PortStore.shared)
+    }
+}
+
 // MARK: - 画廊
 
 struct PrototypeVariant: Identifiable {
@@ -226,6 +348,104 @@ enum PrototypeRenderer {
         return image
     }
 
+    /// 用真实 AppKit 拟合尺寸量一个视图的宽度（避开手写常数）。
+    static func fittingWidth<V: View>(_ view: V) -> CGFloat {
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = NSRect(x: 0, y: 0, width: 800, height: 40)
+        hosting.layoutSubtreeIfNeeded()
+        return hosting.fittingSize.width
+    }
+
+    static func buttonsWidth() -> CGFloat {
+        fittingWidth(
+            HStack(spacing: 2) {
+                HoverButton("Kill", role: .destructive) {}
+                HoverButton("Open") {}
+            }
+        )
+    }
+
+    /// 把"名字宽度 vs 可用宽度"算清楚，别靠眼睛判断截断。
+    static func reportTextWidths(buttons: CGFloat) {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        let dot: CGFloat = 6, spacing: CGFloat = 6, padding: CGFloat = 32
+        let total: CGFloat = 340 - padding - dot - spacing
+        let availableReserved = total - buttons
+        let availableReclaim = total
+
+        print("[prototype] buttons width = \(buttons)")
+        print("[prototype] name area: reserved=\(Int(availableReserved))pt reclaim=\(Int(availableReclaim))pt")
+
+        for repoFirst in [true, false] {
+            var truncating = 0
+            for entry in PrototypeFixtures.entries(repoFirst: repoFirst) {
+                let width = (entry.projectName as NSString)
+                    .size(withAttributes: [.font: font]).width
+                if width > availableReclaim { truncating += 1 }
+            }
+            print("[prototype] \(repoFirst ? "repo-first" : "path-first"): \(truncating)/12 行即使收回按钮宽度仍然要截断")
+        }
+
+        for entry in PrototypeFixtures.entries(repoFirst: true).prefix(7) {
+            let w = (entry.projectName as NSString).size(withAttributes: [.font: font]).width
+            print("[prototype]   \(Int(w))pt  \(entry.projectName)")
+        }
+    }
+
+    /// Q2 第二轮：按钮占位方式 × 命名顺序，各出 normal / hover 两张。
+    static func exportButtonLayouts(to directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let rowHeight = measureRowHeight()
+        let buttons = buttonsWidth()
+        reportTextWidths(buttons: buttons)
+
+        struct Case {
+            let id: String
+            let title: String
+            let layout: PrototypeButtonLayout
+            let repoFirst: Bool
+        }
+
+        let cases: [Case] = [
+            Case(id: "H", title: "占位常驻 + 仓库在前（现状）", layout: .reserved, repoFirst: true),
+            Case(id: "I", title: "占位常驻 + 路径在前", layout: .reserved, repoFirst: false),
+            Case(id: "J", title: "hover 才让位 + 仓库在前", layout: .reclaim, repoFirst: true),
+            Case(id: "K", title: "hover 才让位 + 路径在前", layout: .reclaim, repoFirst: false),
+            Case(id: "L", title: "hover 覆盖尾部（文字不重排）+ 仓库在前", layout: .cover, repoFirst: true),
+        ]
+
+        for c in cases {
+            for hovered in [false, true] {
+                for scheme in PrototypeVariants.colorSchemes {
+                    let content = VStack(spacing: 0) {
+                        Divider()
+                        PrototypeRowList(
+                            entries: PrototypeFixtures.entries(repoFirst: c.repoFirst),
+                            maxRows: 8,
+                            rowHeight: rowHeight,
+                            hovered: hovered,
+                            layout: c.layout,
+                            buttonsWidth: buttons
+                        )
+                    }
+                    .frame(width: 340)
+                    .background(Color(nsColor: .windowBackgroundColor))
+
+                    let name = "\(c.id)-\(hovered ? "hover" : "normal")-\(scheme == .dark ? "dark" : "light").png"
+                    guard let image = snapshot(content, width: 340, scheme: scheme),
+                          let tiff = image.tiffRepresentation,
+                          let rep = NSBitmapImageRep(data: tiff),
+                          let png = rep.representation(using: .png, properties: [:]) else {
+                        print("[prototype] failed \(name)")
+                        continue
+                    }
+                    try png.write(to: directory.appending(path: name))
+                    print("[prototype] wrote \(name)")
+                }
+            }
+        }
+    }
+
     static func exportAll(to directory: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let rowHeight = measureRowHeight()
@@ -280,6 +500,7 @@ enum PrototypeWindow {
     static func runExportAndQuit(directory: URL) {
         do {
             try PrototypeRenderer.exportAll(to: directory)
+            try PrototypeRenderer.exportButtonLayouts(to: directory)
         } catch {
             print("[prototype] export failed: \(error)")
         }
